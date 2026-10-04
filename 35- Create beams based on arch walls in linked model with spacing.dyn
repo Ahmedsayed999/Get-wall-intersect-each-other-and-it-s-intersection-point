@@ -1,0 +1,288 @@
+{
+  "Uuid": "a3b6197e-193f-4592-b628-f1780f625cfc",
+  "IsCustomNode": false,
+  "Description": "",
+  "Name": "35- Create beams based on arch walls in linked model with spacing",
+  "ElementResolver": {
+    "ResolutionMap": {}
+  },
+  "Inputs": [],
+  "Outputs": [],
+  "Nodes": [
+    {
+      "ConcreteType": "PythonNodeModels.PythonNode, PythonNodeModels",
+      "Code": "import clr\r\n\r\n\r\n# =========================================================\r\n# REVIT API\r\n# =========================================================\r\n\r\nclr.AddReference(\"RevitAPI\")\r\n\r\nfrom Autodesk.Revit.DB import (\r\n    FilteredElementCollector,\r\n    BuiltInCategory,\r\n    RevitLinkInstance,\r\n    LocationCurve,\r\n    XYZ,\r\n    Line,\r\n    Transaction,\r\n    BuiltInParameter,\r\n    ElementId,\r\n    Transform\r\n)\r\n\r\nfrom Autodesk.Revit.DB.Structure import StructuralType\r\n\r\n\r\n# =========================================================\r\n# REVIT SERVICES\r\n# =========================================================\r\n\r\nclr.AddReference(\"RevitServices\")\r\n\r\nfrom RevitServices.Persistence import DocumentManager\r\n\r\n\r\n# =========================================================\r\n# HOST DOCUMENT\r\n# =========================================================\r\n\r\ndoc = DocumentManager.Instance.CurrentDBDocument\r\n\r\n\r\n# =========================================================\r\n# DYNAMO INPUTS\r\n# =========================================================\r\n\r\nlink_instance = UnwrapElement(IN[0])\r\n\r\nbeam_type = UnwrapElement(IN[1])\r\n\r\nhost_level = UnwrapElement(IN[2])\r\n\r\nspacing_mm = IN[3]\r\n\r\n\r\n# =========================================================\r\n# UNIT CONVERSION\r\n# =========================================================\r\n\r\nMM_TO_FT = 1.0 / 304.8\r\n\r\nspacing_ft = spacing_mm * MM_TO_FT\r\n\r\n\r\n# =========================================================\r\n# CHECK SPACING\r\n# =========================================================\r\n\r\nif spacing_ft <= 0:\r\n\r\n    OUT = \"Spacing must be greater than zero.\"\r\n\r\n\r\nelse:\r\n\r\n    # =====================================================\r\n    # CHECK LINK\r\n    # =====================================================\r\n\r\n    if link_instance is None:\r\n\r\n        OUT = \"IN[0] is empty.\"\r\n\r\n\r\n    elif not isinstance(\r\n        link_instance,\r\n        RevitLinkInstance\r\n    ):\r\n\r\n        OUT = [\r\n            \"IN[0] is not a RevitLinkInstance.\",\r\n            link_instance.GetType().FullName\r\n        ]\r\n\r\n\r\n    else:\r\n\r\n        # =================================================\r\n        # GET LINKED ARCHITECTURAL DOCUMENT\r\n        # =================================================\r\n\r\n        linked_doc = link_instance.GetLinkDocument()\r\n\r\n\r\n        if linked_doc is None:\r\n\r\n            OUT = [\r\n                \"The Revit Link was found.\",\r\n                \"But the linked document is not available.\"\r\n            ]\r\n\r\n\r\n        else:\r\n\r\n            # =============================================\r\n            # GET LINK TRANSFORM\r\n            # =============================================\r\n\r\n            link_transform = link_instance.GetTransform()\r\n\r\n\r\n            # =============================================\r\n            # COLLECT ARCHITECTURAL WALLS\r\n            # =============================================\r\n\r\n            walls = (\r\n                FilteredElementCollector(linked_doc)\r\n                .OfCategory(BuiltInCategory.OST_Walls)\r\n                .WhereElementIsNotElementType()\r\n                .ToElements()\r\n            )\r\n\r\n\r\n            # =============================================\r\n            # RESULT LISTS\r\n            # =============================================\r\n\r\n            created_beams = []\r\n\r\n            processed_walls = []\r\n\r\n            skipped_walls = []\r\n\r\n            errors = []\r\n\r\n            wall_information = []\r\n\r\n\r\n            # =============================================\r\n            # START TRANSACTION\r\n            # =============================================\r\n\r\n            transaction = Transaction(\r\n                doc,\r\n                \"Create Structural Framing From Wall Heights\"\r\n            )\r\n\r\n            transaction.Start()\r\n\r\n\r\n            # =============================================\r\n            # ACTIVATE BEAM TYPE\r\n            # =============================================\r\n\r\n            if not beam_type.IsActive:\r\n\r\n                beam_type.Activate()\r\n\r\n                doc.Regenerate()\r\n\r\n\r\n            # =============================================\r\n            # LOOP THROUGH ARCHITECTURAL WALLS\r\n            # =============================================\r\n\r\n            for wall in walls:\r\n\r\n                try:\r\n\r\n                    # =====================================\r\n                    # GET WALL LOCATION\r\n                    # =====================================\r\n\r\n                    location = wall.Location\r\n\r\n\r\n                    if not isinstance(\r\n                        location,\r\n                        LocationCurve\r\n                    ):\r\n\r\n                        skipped_walls.append(\r\n                            wall.Id.IntegerValue\r\n                        )\r\n\r\n                        continue\r\n\r\n\r\n                    # =====================================\r\n                    # GET WALL CENTERLINE\r\n                    # =====================================\r\n\r\n                    wall_curve = location.Curve\r\n\r\n\r\n                    if wall_curve is None:\r\n\r\n                        skipped_walls.append(\r\n                            wall.Id.IntegerValue\r\n                        )\r\n\r\n                        continue\r\n\r\n\r\n                    # =====================================\r\n                    # GET BASE LEVEL PARAMETER\r\n                    # =====================================\r\n\r\n                    base_level_parameter = wall.get_Parameter(\r\n                        BuiltInParameter.WALL_BASE_CONSTRAINT\r\n                    )\r\n\r\n\r\n                    if base_level_parameter is None:\r\n\r\n                        skipped_walls.append(\r\n                            wall.Id.IntegerValue\r\n                        )\r\n\r\n                        continue\r\n\r\n\r\n                    # =====================================\r\n                    # GET BASE LEVEL ID\r\n                    # =====================================\r\n\r\n                    base_level_id = (\r\n                        base_level_parameter.AsElementId()\r\n                    )\r\n\r\n\r\n                    # =====================================\r\n                    # GET BASE LEVEL\r\n                    # =====================================\r\n\r\n                    base_level = linked_doc.GetElement(\r\n                        base_level_id\r\n                    )\r\n\r\n\r\n                    if base_level is None:\r\n\r\n                        skipped_walls.append(\r\n                            wall.Id.IntegerValue\r\n                        )\r\n\r\n                        continue\r\n\r\n\r\n                    # =====================================\r\n                    # GET BASE OFFSET\r\n                    # =====================================\r\n\r\n                    base_offset_parameter = wall.get_Parameter(\r\n                        BuiltInParameter.WALL_BASE_OFFSET\r\n                    )\r\n\r\n\r\n                    if base_offset_parameter is not None:\r\n\r\n                        base_offset = (\r\n                            base_offset_parameter.AsDouble()\r\n                        )\r\n\r\n                    else:\r\n\r\n                        base_offset = 0.0\r\n\r\n\r\n                    # =====================================\r\n                    # CALCULATE ACTUAL BASE ELEVATION\r\n                    # =====================================\r\n\r\n                    base_z = (\r\n                        base_level.Elevation\r\n                        + base_offset\r\n                    )\r\n\r\n\r\n                    # =====================================\r\n                    # GET TOP CONSTRAINT\r\n                    # =====================================\r\n\r\n                    top_level_parameter = wall.get_Parameter(\r\n                        BuiltInParameter.WALL_HEIGHT_TYPE\r\n                    )\r\n\r\n\r\n                    top_z = None\r\n\r\n                    top_level = None\r\n\r\n\r\n                    if top_level_parameter is not None:\r\n\r\n                        top_level_id = (\r\n                            top_level_parameter.AsElementId()\r\n                        )\r\n\r\n\r\n                        # =================================\r\n                        # WALL HAS TOP CONSTRAINT\r\n                        # =================================\r\n\r\n                        if top_level_id != ElementId.InvalidElementId:\r\n\r\n                            top_level = linked_doc.GetElement(\r\n                                top_level_id\r\n                            )\r\n\r\n\r\n                            if top_level is not None:\r\n\r\n                                # =============================\r\n                                # GET TOP OFFSET\r\n                                # =============================\r\n\r\n                                top_offset_parameter = wall.get_Parameter(\r\n                                    BuiltInParameter.WALL_TOP_OFFSET\r\n                                )\r\n\r\n\r\n                                if top_offset_parameter is not None:\r\n\r\n                                    top_offset = (\r\n                                        top_offset_parameter.AsDouble()\r\n                                    )\r\n\r\n                                else:\r\n\r\n                                    top_offset = 0.0\r\n\r\n\r\n                                # =============================\r\n                                # CALCULATE TOP ELEVATION\r\n                                # =============================\r\n\r\n                                top_z = (\r\n                                    top_level.Elevation\r\n                                    + top_offset\r\n                                )\r\n\r\n\r\n                    # =====================================\r\n                    # WALL HAS NO TOP CONSTRAINT\r\n                    # =====================================\r\n\r\n                    if top_z is None:\r\n\r\n                        height_parameter = wall.get_Parameter(\r\n                            BuiltInParameter.WALL_USER_HEIGHT_PARAM\r\n                        )\r\n\r\n\r\n                        if height_parameter is None:\r\n\r\n                            skipped_walls.append(\r\n                                wall.Id.IntegerValue\r\n                            )\r\n\r\n                            continue\r\n\r\n\r\n                        wall_height = (\r\n                            height_parameter.AsDouble()\r\n                        )\r\n\r\n\r\n                        top_z = (\r\n                            base_z\r\n                            + wall_height\r\n                        )\r\n\r\n\r\n                    # =====================================\r\n                    # CHECK WALL HEIGHT\r\n                    # =====================================\r\n\r\n                    wall_height = top_z - base_z\r\n\r\n\r\n                    if wall_height <= 0:\r\n\r\n                        skipped_walls.append(\r\n                            wall.Id.IntegerValue\r\n                        )\r\n\r\n                        continue\r\n\r\n\r\n                    # =====================================\r\n                    # TRANSFORM WALL CURVE\r\n                    # LINK → HOST\r\n                    # =====================================\r\n\r\n                    host_curve = (\r\n                        wall_curve.CreateTransformed(\r\n                            link_transform\r\n                        )\r\n                    )\r\n\r\n\r\n                    # =====================================\r\n                    # GET CURRENT CURVE Z\r\n                    # =====================================\r\n\r\n                    curve_start = host_curve.GetEndPoint(0)\r\n\r\n                    current_curve_z = curve_start.Z\r\n\r\n\r\n                    # =====================================\r\n                    # CALCULATE VERTICAL TRANSLATION\r\n                    # =====================================\r\n\r\n                    z_translation = (\r\n                        base_z - current_curve_z\r\n                    )\r\n\r\n\r\n                    translation = Transform.CreateTranslation(\r\n                        XYZ(\r\n                            0.0,\r\n                            0.0,\r\n                            z_translation\r\n                        )\r\n                    )\r\n\r\n\r\n                    # =====================================\r\n                    # MOVE CURVE TO WALL BASE ELEVATION\r\n                    # =====================================\r\n\r\n                    base_curve = (\r\n                        host_curve.CreateTransformed(\r\n                            translation\r\n                        )\r\n                    )\r\n\r\n\r\n                    # =====================================\r\n                    # NUMBER OF SPACES\r\n                    # =====================================\r\n\r\n                    number_of_spaces = int(\r\n                        wall_height / spacing_ft\r\n                    )\r\n\r\n\r\n                    # =====================================\r\n                    # CREATE BEAMS\r\n                    # =====================================\r\n\r\n                    wall_beam_count = 0\r\n\r\n\r\n                    for i in range(\r\n                        number_of_spaces + 1\r\n                    ):\r\n\r\n                        beam_z_offset = (\r\n                            i * spacing_ft\r\n                        )\r\n\r\n\r\n                        # =================================\r\n                        # STOP IF ABOVE WALL TOP\r\n                        # =================================\r\n\r\n                        if (\r\n                            base_z\r\n                            + beam_z_offset\r\n                            > top_z + 0.001\r\n                        ):\r\n\r\n                            break\r\n\r\n\r\n                        # =================================\r\n                        # TRANSLATE BASE CURVE\r\n                        # =================================\r\n\r\n                        beam_translation = (\r\n                            Transform.CreateTranslation(\r\n                                XYZ(\r\n                                    0.0,\r\n                                    0.0,\r\n                                    beam_z_offset\r\n                                )\r\n                            )\r\n                        )\r\n\r\n\r\n                        beam_curve = (\r\n                            base_curve.CreateTransformed(\r\n                                beam_translation\r\n                            )\r\n                        )\r\n\r\n\r\n                        # =================================\r\n                        # CREATE STRUCTURAL BEAM\r\n                        # =================================\r\n\r\n                        beam = doc.Create.NewFamilyInstance(\r\n                            beam_curve,\r\n                            beam_type,\r\n                            host_level,\r\n                            StructuralType.Beam\r\n                        )\r\n\r\n\r\n                        # =================================\r\n                        # STORE BEAM\r\n                        # =================================\r\n\r\n                        created_beams.append(\r\n                            beam\r\n                        )\r\n\r\n\r\n                        wall_beam_count += 1\r\n\r\n\r\n                    # =====================================\r\n                    # STORE WALL INFORMATION\r\n                    # =====================================\r\n\r\n                    wall_information.append(\r\n                        [\r\n                            wall.Id.IntegerValue,\r\n                            base_z,\r\n                            top_z,\r\n                            wall_height,\r\n                            wall_beam_count\r\n                        ]\r\n                    )\r\n\r\n\r\n                    processed_walls.append(\r\n                        wall.Id.IntegerValue\r\n                    )\r\n\r\n\r\n                except Exception as e:\r\n\r\n                    errors.append(\r\n                        \"Wall ID {} : {}\".format(\r\n                            wall.Id.IntegerValue,\r\n                            str(e)\r\n                        )\r\n                    )\r\n\r\n\r\n            # =============================================\r\n            # COMMIT TRANSACTION\r\n            # =============================================\r\n\r\n            transaction.Commit()\r\n\r\n\r\n            # =============================================\r\n            # OUTPUT\r\n            # =============================================\r\n\r\n            OUT = [\r\n                created_beams,\r\n                processed_walls,\r\n                skipped_walls,\r\n                errors,\r\n                wall_information\r\n            ]",
+      "Engine": "CPython3",
+      "EngineName": "CPython3",
+      "VariableInputPorts": true,
+      "Id": "d50065b669134f879a529ff502394d53",
+      "NodeType": "PythonScriptNode",
+      "Inputs": [
+        {
+          "Id": "42dcbb3730374ea181ea9366be5c0126",
+          "Name": "IN[0]",
+          "Description": "Input #0",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "67a1c7bd81874f0abe4e615a5639d999",
+          "Name": "IN[1]",
+          "Description": "Input #1",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "6adbe570d4d84a7abb5d7ea661eb8fcf",
+          "Name": "IN[2]",
+          "Description": "Input #2",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "a97cd3f2faac4923b2c23ab163142fa6",
+          "Name": "IN[3]",
+          "Description": "Input #3",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "36b6767f58134449889756442c8300e7",
+          "Name": "OUT",
+          "Description": "Result of the python script",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Runs an embedded Python script."
+    },
+    {
+      "ConcreteType": "DSRevitNodesUI.StructuralFramingTypes, DSRevitNodesUI",
+      "SelectedIndex": 1,
+      "SelectedString": "250 x 600",
+      "Id": "03598977f14e464fa63706c23f1080db",
+      "NodeType": "ExtensionNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "5cb2bc5df1544a36ba6914bbe47b5533",
+          "Name": "Framing Types",
+          "Description": "The selected Framing Types",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Select a structural framing type in the active document"
+    },
+    {
+      "ConcreteType": "DSRevitNodesUI.Levels, DSRevitNodesUI",
+      "SelectedIndex": 1,
+      "SelectedString": "Level 2",
+      "Id": "194337b0781e4ca1ace9ed6b600e81b7",
+      "NodeType": "ExtensionNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "61083fee35394f7880af2253b061d9cb",
+          "Name": "Levels",
+          "Description": "The selected Levels",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Select a level in the active document"
+    },
+    {
+      "ConcreteType": "Dynamo.Graph.Nodes.CodeBlockNodeModel, DynamoCore",
+      "Id": "da0e1f55208d49bd95092bc4ac4c31ad",
+      "NodeType": "CodeBlockNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "88b2e8a7e7744ba4a1706e6da59eadbc",
+          "Name": "",
+          "Description": "Value of expression at line 1",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Allows for DesignScript code to be authored directly",
+      "Code": "1000;"
+    },
+    {
+      "ConcreteType": "Dynamo.Nodes.DSModelElementSelection, DSRevitNodesUI",
+      "NodeType": "ExtensionNode",
+      "InstanceId": [
+        "b9c27b58-0382-409f-864f-8f7ba675a9af-000916c6"
+      ],
+      "Id": "48bb33c1934940619bc421eb295923c2",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "636b37f25e8c4a33bfd32c42ad72ab14",
+          "Name": "Element",
+          "Description": "The selected elements.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Select a model element from the document."
+    }
+  ],
+  "Connectors": [
+    {
+      "Start": "5cb2bc5df1544a36ba6914bbe47b5533",
+      "End": "67a1c7bd81874f0abe4e615a5639d999",
+      "Id": "994c8f2e927345928ea2b76caa63eadd",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "61083fee35394f7880af2253b061d9cb",
+      "End": "6adbe570d4d84a7abb5d7ea661eb8fcf",
+      "Id": "8f12579c4a384076b38648da442e7433",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "88b2e8a7e7744ba4a1706e6da59eadbc",
+      "End": "a97cd3f2faac4923b2c23ab163142fa6",
+      "Id": "5f4bffdbe446420a935af4fd777cb70b",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "636b37f25e8c4a33bfd32c42ad72ab14",
+      "End": "42dcbb3730374ea181ea9366be5c0126",
+      "Id": "5070f162db4540628141ebde320a4995",
+      "IsHidden": "False"
+    }
+  ],
+  "Dependencies": [],
+  "NodeLibraryDependencies": [],
+  "Thumbnail": "",
+  "GraphDocumentationURL": null,
+  "ExtensionWorkspaceData": [
+    {
+      "ExtensionGuid": "28992e1d-abb9-417f-8b1b-05e053bee670",
+      "Name": "Properties",
+      "Version": "2.19",
+      "Data": {}
+    },
+    {
+      "ExtensionGuid": "DFBD9CC0-DB40-457A-939E-8C8555555A9D",
+      "Name": "Generative Design",
+      "Version": "6.1",
+      "Data": {}
+    }
+  ],
+  "Author": "",
+  "Linting": {
+    "activeLinter": "None",
+    "activeLinterId": "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+    "warningCount": 0,
+    "errorCount": 0
+  },
+  "Bindings": [],
+  "View": {
+    "Dynamo": {
+      "ScaleFactor": 1.0,
+      "HasRunWithoutCrash": true,
+      "IsVisibleInDynamoLibrary": true,
+      "Version": "2.19.3.6394",
+      "RunType": "Manual",
+      "RunPeriod": "1000"
+    },
+    "Camera": {
+      "Name": "_Background Preview",
+      "EyeX": -17.0,
+      "EyeY": 24.0,
+      "EyeZ": 50.0,
+      "LookX": 12.0,
+      "LookY": -13.0,
+      "LookZ": -58.0,
+      "UpX": 0.0,
+      "UpY": 1.0,
+      "UpZ": 0.0
+    },
+    "ConnectorPins": [],
+    "NodeViews": [
+      {
+        "Id": "d50065b669134f879a529ff502394d53",
+        "Name": "Python Script",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 576.96080601975632,
+        "Y": 395.75979849506126
+      },
+      {
+        "Id": "03598977f14e464fa63706c23f1080db",
+        "Name": "Structural Framing Types",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 131.81073448697003,
+        "Y": 384.10677951411827
+      },
+      {
+        "Id": "194337b0781e4ca1ace9ed6b600e81b7",
+        "Name": "Levels",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 131.22599579035352,
+        "Y": 524.80969975609753
+      },
+      {
+        "Id": "da0e1f55208d49bd95092bc4ac4c31ad",
+        "Name": "Code Block",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 152.34488394800172,
+        "Y": 667.91619576999813
+      },
+      {
+        "Id": "48bb33c1934940619bc421eb295923c2",
+        "Name": "Select Model Element",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 236.21695255588037,
+        "Y": 209.86893582927559
+      }
+    ],
+    "Annotations": [],
+    "X": 233.16387729928982,
+    "Y": 118.66784209835237,
+    "Zoom": 0.7576031780602982
+  }
+}
